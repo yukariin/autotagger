@@ -75,7 +75,7 @@ class Autotagger:
         arr = arr[:, :, ::-1]  # RGB → BGR
         return arr  # shape: (H, W, 3)
 
-    def predict(self, images, threshold=0.52, limit=50, bs=64):
+    def predict(self, images, threshold=0.01, limit=50, bs=64):
         """Yield a {tag: score} dict for each image in `images`.
 
         Parameters
