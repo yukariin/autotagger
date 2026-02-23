@@ -5,13 +5,6 @@ import onnxruntime as rt
 from pathlib import Path
 from PIL import Image
 
-# Kaomojis that must not have underscores replaced with spaces
-KAOMOJIS = {
-    "0_0", "(o)_(o)", "+_+", "+_-", "._.", "<o>_<o>", "<|>_<|>", "=_=",
-    ">_<", "3_3", "6_9", ">_o", "@_@", "^_^", "o_o", "u_u", "x_x", "|_|",
-    "||_||",
-}
-
 MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
 
@@ -46,9 +39,7 @@ class Autotagger:
 
         # Load tag vocabulary
         tags_df = pd.read_csv(csv_path)
-        self.tag_names = tags_df["name"].map(
-            lambda x: x.replace("_", " ") if x not in KAOMOJIS else x
-        ).tolist()
+        self.tag_names = tags_df["name"].tolist()
         self.rating_indexes = list(np.where(tags_df["category"] == 9)[0])
         self.general_indexes = list(np.where(tags_df["category"] == 0)[0])
         self.character_indexes = list(np.where(tags_df["category"] == 4)[0])
