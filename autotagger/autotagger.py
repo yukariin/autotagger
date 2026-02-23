@@ -37,12 +37,11 @@ class Autotagger:
             csv_path = huggingface_hub.hf_hub_download(repo_id, LABEL_FILENAME)
             onnx_path = huggingface_hub.hf_hub_download(repo_id, MODEL_FILENAME)
 
-        # Load tag vocabulary
         tags_df = pd.read_csv(csv_path)
-        self.tag_names = tags_df["name"].tolist()
-        self.rating_indexes = list(np.where(tags_df["category"] == 9)[0])
-        self.general_indexes = list(np.where(tags_df["category"] == 0)[0])
-        self.character_indexes = list(np.where(tags_df["category"] == 4)[0])
+        self.tag_names = [
+            f"rating:{name}" if category == 9 else name
+            for name, category in zip(tags_df["name"], tags_df["category"])
+        ]
 
         # Load ONNX model
         self.model = rt.InferenceSession(str(onnx_path))
