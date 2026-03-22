@@ -13,7 +13,8 @@ class Autotagger:
     def __init__(
         self,
         model_path: str = "SmilingWolf/wd-eva02-large-tagger-v3",
-        device: str = "GPU"
+        device: str = "GPU",
+        openvino_cache_dir: str = "/autotagger/ov_cache",
     ):
         """Load the WD EVA02-Large Tagger v3 ONNX model.
 
@@ -50,7 +51,8 @@ class Autotagger:
         # Load ONNX model
         ov_options = {
             "device_type": device,
-            "precision": "FP16"
+            "precision": "FP16",
+            "cache_dir": openvino_cache_dir
         }
         providers = [
             ("OpenVINOExecutionProvider", ov_options),
