@@ -13,7 +13,15 @@ ENV \
 
 RUN \
   apt-get update && \
-  apt-get install -y --no-install-recommends tini && \
+  apt-get install -y --no-install-recommends \
+    tini \
+    # Intel iGPU drivers
+    intel-opencl-icd \
+    intel-level-zero-gpu \
+    level-zero \
+    ocl-icd-libopencl1 \
+    clinfo \
+  && \
   apt-get clean && rm -rf /var/lib/apt/lists/* && \
   pip install "poetry==1.8.5"
 
