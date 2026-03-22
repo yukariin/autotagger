@@ -10,7 +10,11 @@ LABEL_FILENAME = "selected_tags.csv"
 
 
 class Autotagger:
-    def __init__(self, model_path="SmilingWolf/wd-eva02-large-tagger-v3"):
+    def __init__(
+        self,
+        model_path: str = "SmilingWolf/wd-eva02-large-tagger-v3",
+        device: str = "GPU"
+    ):
         """Load the WD EVA02-Large Tagger v3 ONNX model.
 
         `model_path` may be:
@@ -46,7 +50,7 @@ class Autotagger:
         # Load ONNX model
         provider_options = [
             {
-                "device_type": "GPU",
+                "device_type": device,
                 "precision": "FP16"
             }
         ]

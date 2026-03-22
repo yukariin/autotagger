@@ -1,4 +1,6 @@
-FROM python:3.11-slim
+FROM openvino/ubuntu22_runtime:2024.1.0
+
+USER root
 WORKDIR /autotagger
 
 ENV \
@@ -15,11 +17,11 @@ RUN \
   apt-get update && \
   apt-get install -y --no-install-recommends \
     tini \
+    python3-pip \
     # Intel iGPU drivers
     intel-opencl-icd \
     intel-level-zero-gpu \
     level-zero \
-    ocl-icd-libopencl1 \
     clinfo \
   && \
   apt-get clean && rm -rf /var/lib/apt/lists/* && \
