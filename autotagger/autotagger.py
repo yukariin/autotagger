@@ -51,7 +51,6 @@ class Autotagger:
         # Load ONNX model
         ov_options = {
             "device_type": device,
-            "precision": "FP16",
             "cache_dir": openvino_cache_dir
         }
         providers = [
