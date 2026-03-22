@@ -48,17 +48,15 @@ class Autotagger:
         ]
 
         # Load ONNX model
-        provider_options = [
-            {
-                "device_type": device,
-                "precision": "FP16"
-            }
-        ]
+        ov_options = {
+            "device_type": device,
+            "precision": "FP16"
+        }
         providers = [
-            "OpenVINOExecutionProvider",
+            ("OpenVINOExecutionProvider", ov_options),
             "CPUExecutionProvider"
         ]
-        self.model = rt.InferenceSession(str(onnx_path), providers=providers, provider_options=provider_options)
+        self.model = rt.InferenceSession(str(onnx_path), providers=providers)
         _, height, width, _ = self.model.get_inputs()[0].shape
         self.target_size = height
 
