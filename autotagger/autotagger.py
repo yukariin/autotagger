@@ -46,29 +46,32 @@ class Autotagger:
         # Load ONNX model
         self.model = rt.InferenceSession(str(onnx_path))
         _, height, width, _ = self.model.get_inputs()[0].shape
-        self.target_size = height  # 448 for EVA02-Large v3
+        self.target_size = height
 
         self._input_name = self.model.get_inputs()[0].name
         self._output_name = self.model.get_outputs()[0].name
 
     def _prepare_image(self, image: Image.Image) -> np.ndarray:
         """Preprocess a PIL image into the NHWC BGR float32 array the model expects."""
+        target_size = self.target_size
+
         # Flatten RGBA onto white background
         canvas = Image.new("RGBA", image.size, (255, 255, 255))
         canvas.alpha_composite(image.convert("RGBA"))
         image = canvas.convert("RGB")
 
-        # Pad to square with white
-        w, h = image.size
-        max_dim = max(w, h)
-        pad_left = (max_dim - w) // 2
-        pad_top = (max_dim - h) // 2
+        # Pad to square
+        image_shape = image.size
+        max_dim = max(image_shape)
+        pad_left = (max_dim - image_shape[0]) // 2
+        pad_top = (max_dim - image_shape[1]) // 2
+
         padded = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
         padded.paste(image, (pad_left, pad_top))
 
-        # Resize to model input size
-        if max_dim != self.target_size:
-            padded = padded.resize((self.target_size, self.target_size), Image.BICUBIC)
+        # Resize
+        if max_dim != target_size:
+            padded = padded.resize((target_size, target_size), Image.BICUBIC)
 
         # HWC RGB → HWC BGR float32
         arr = np.asarray(padded, dtype=np.float32)
