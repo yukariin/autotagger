@@ -23,13 +23,13 @@ RUN \
 
 COPY pyproject.toml poetry.lock* ./
 RUN \
-  python -m poetry config virtualenvs.create false && \
-  python -m poetry install --only main --no-interaction --no-ansi && \
+  python3 -m poetry config virtualenvs.create false && \
+  python3 -m poetry install --only main --no-interaction --no-ansi && \
   rm -rf /root/.cache/pypoetry
 
 # Pre-download the ONNX model and tag vocabulary at build time so the
 # container starts instantly without a network fetch at runtime.
-RUN python - <<'EOF'
+RUN python3 - <<'EOF'
 import huggingface_hub
 repo = "SmilingWolf/wd-eva02-large-tagger-v3"
 huggingface_hub.hf_hub_download(repo, "model.onnx")
