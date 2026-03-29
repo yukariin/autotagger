@@ -30,8 +30,8 @@ def _resolve_model_files(model_path):
     else:
         import huggingface_hub
         repo_id = str(model_path)
-        csv_path = huggingface_hub.hf_hub_download(repo_id, LABEL_FILENAME)
-        onnx_path = huggingface_hub.hf_hub_download(repo_id, MODEL_FILENAME)
+        csv_path = Path(huggingface_hub.hf_hub_download(repo_id, LABEL_FILENAME))
+        onnx_path = Path(huggingface_hub.hf_hub_download(repo_id, MODEL_FILENAME))
 
     return onnx_path, csv_path
 
