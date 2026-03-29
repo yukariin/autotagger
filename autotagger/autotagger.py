@@ -1,12 +1,49 @@
 import numpy as np
+import os
+import openvino as ov
 import pandas as pd
-import onnxruntime as rt
 
 from pathlib import Path
 from PIL import Image
 
 MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
+
+
+def _resolve_model_files(model_path):
+    """Resolve (onnx_path, csv_path) from a model_path string/Path.
+
+    model_path may be:
+      - A HuggingFace repo ID
+      - A local directory containing model.onnx and selected_tags.csv
+      - A direct path to a .onnx file
+    """
+    model_path = Path(model_path)
+
+    if model_path.is_file():
+        onnx_path = model_path
+        csv_path = model_path.parent / LABEL_FILENAME
+    elif model_path.is_dir():
+        onnx_path = model_path / MODEL_FILENAME
+        csv_path = model_path / LABEL_FILENAME
+    else:
+        import huggingface_hub
+        repo_id = str(model_path)
+        csv_path = Path(huggingface_hub.hf_hub_download(repo_id, LABEL_FILENAME))
+        onnx_path = Path(huggingface_hub.hf_hub_download(repo_id, MODEL_FILENAME))
+
+    return onnx_path, csv_path
+
+
+def _create_model(onnx_path):
+    """Compile an OpenVINO model from an ONNX file with CPU-optimized settings."""
+    core = ov.Core()
+
+    num_threads = int(os.getenv("ORT_NUM_THREADS", "0"))
+    if num_threads > 0:
+        core.set_property("CPU", {"INFERENCE_NUM_THREADS": str(num_threads)})
+
+    return core.compile_model(str(onnx_path), "CPU")
 
 
 class Autotagger:
@@ -19,23 +56,7 @@ class Autotagger:
           - A direct path to the model.onnx file (selected_tags.csv must sit
             alongside it in the same directory)
         """
-        model_path = Path(model_path)
-
-        # Resolve actual file paths
-        if model_path.is_file():
-            # Direct path to the .onnx file
-            onnx_path = model_path
-            csv_path = model_path.parent / LABEL_FILENAME
-        elif model_path.is_dir():
-            # Local directory containing the model files
-            onnx_path = model_path / MODEL_FILENAME
-            csv_path = model_path / LABEL_FILENAME
-        else:
-            # Treat as a HuggingFace repo ID and download via huggingface_hub
-            import huggingface_hub
-            repo_id = str(model_path)
-            csv_path = huggingface_hub.hf_hub_download(repo_id, LABEL_FILENAME)
-            onnx_path = huggingface_hub.hf_hub_download(repo_id, MODEL_FILENAME)
+        onnx_path, csv_path = _resolve_model_files(model_path)
 
         tags_df = pd.read_csv(csv_path)
         self.tag_names = [
@@ -43,13 +64,17 @@ class Autotagger:
             for name, category in zip(tags_df["name"], tags_df["category"])
         ]
 
-        # Load ONNX model
-        self.model = rt.InferenceSession(str(onnx_path))
-        _, height, width, _ = self.model.get_inputs()[0].shape
-        self.target_size = height
+        model = _create_model(onnx_path)
 
-        self._input_name = self.model.get_inputs()[0].name
-        self._output_name = self.model.get_outputs()[0].name
+        # Get input shape: dimensions are [N, H, W, C] where N may be dynamic
+        input_dims = model.input(0).get_partial_shape()
+        self.target_size = input_dims[1].get_length()
+
+        self._input_name = model.input(0).get_any_name()
+        self._output_name = model.output(0).get_any_name()
+
+        # Create a reusable infer request for better performance
+        self._infer_request = model.create_infer_request()
 
     def _prepare_image(self, image: Image.Image) -> np.ndarray:
         """Preprocess a PIL image into the NHWC BGR float32 array the model expects."""
@@ -89,7 +114,7 @@ class Autotagger:
         limit : int
             Maximum number of tags to return per image.
         bs : int
-            Batch size for ONNX inference.
+            Batch size for inference.
         """
         images = list(images)
         if not images:
@@ -101,9 +126,9 @@ class Autotagger:
             batch_arr = np.stack([self._prepare_image(img) for img in batch_imgs])
             # shape: (N, H, W, 3) — NHWC as the model expects
 
-            preds = self.model.run(
-                [self._output_name], {self._input_name: batch_arr}
-            )[0]  # shape: (N, num_tags)
+            self._infer_request.infer({self._input_name: batch_arr})
+            preds = self._infer_request.get_output_tensor().data
+            # preds shape: (N, num_tags)
 
             for scores in preds:
                 # Pair every tag name with its score
