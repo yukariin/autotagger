@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import pandas as pd
 import onnxruntime as rt
 
@@ -6,11 +7,60 @@ from pathlib import Path
 from PIL import Image
 
 MODEL_FILENAME = "model.onnx"
+MODEL_INT8_FILENAME = "model_int8.onnx"
 LABEL_FILENAME = "selected_tags.csv"
 
 
+def _resolve_model_files(model_path):
+    """Resolve (onnx_path, csv_path) from a model_path string/Path.
+
+    model_path may be:
+      - A HuggingFace repo ID
+      - A local directory containing model.onnx and selected_tags.csv
+      - A direct path to a .onnx file
+    """
+    model_path = Path(model_path)
+
+    if model_path.is_file():
+        onnx_path = model_path
+        csv_path = model_path.parent / LABEL_FILENAME
+    elif model_path.is_dir():
+        onnx_path = model_path / MODEL_FILENAME
+        csv_path = model_path / LABEL_FILENAME
+    else:
+        import huggingface_hub
+        repo_id = str(model_path)
+        csv_path = huggingface_hub.hf_hub_download(repo_id, LABEL_FILENAME)
+        onnx_path = huggingface_hub.hf_hub_download(repo_id, MODEL_FILENAME)
+
+    return onnx_path, csv_path
+
+
+def _pick_onnx_path(onnx_path, prefer_int8=True):
+    """Return the INT8 model path if it exists and is preferred, else the original."""
+    if prefer_int8:
+        int8_path = onnx_path.parent / MODEL_INT8_FILENAME
+        if int8_path.is_file():
+            print(f"Using quantized model: {int8_path}")
+            return int8_path
+    return onnx_path
+
+
+def _create_session(onnx_path):
+    """Create an ONNX Runtime InferenceSession with CPU-optimized settings."""
+    sess_opts = rt.SessionOptions()
+    sess_opts.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_opts.inter_op_num_threads = 1
+
+    num_threads = int(os.getenv("ORT_NUM_THREADS", "0"))
+    if num_threads > 0:
+        sess_opts.intra_op_num_threads = num_threads
+
+    return rt.InferenceSession(str(onnx_path), sess_options=sess_opts)
+
+
 class Autotagger:
-    def __init__(self, model_path="SmilingWolf/wd-eva02-large-tagger-v3"):
+    def __init__(self, model_path="SmilingWolf/wd-eva02-large-tagger-v3", prefer_int8=True):
         """Load the WD EVA02-Large Tagger v3 ONNX model.
 
         `model_path` may be:
@@ -18,24 +68,12 @@ class Autotagger:
           - A local directory that contains model.onnx and selected_tags.csv
           - A direct path to the model.onnx file (selected_tags.csv must sit
             alongside it in the same directory)
-        """
-        model_path = Path(model_path)
 
-        # Resolve actual file paths
-        if model_path.is_file():
-            # Direct path to the .onnx file
-            onnx_path = model_path
-            csv_path = model_path.parent / LABEL_FILENAME
-        elif model_path.is_dir():
-            # Local directory containing the model files
-            onnx_path = model_path / MODEL_FILENAME
-            csv_path = model_path / LABEL_FILENAME
-        else:
-            # Treat as a HuggingFace repo ID and download via huggingface_hub
-            import huggingface_hub
-            repo_id = str(model_path)
-            csv_path = huggingface_hub.hf_hub_download(repo_id, LABEL_FILENAME)
-            onnx_path = huggingface_hub.hf_hub_download(repo_id, MODEL_FILENAME)
+        `prefer_int8` selects the INT8-quantized model (model_int8.onnx) when
+        it exists alongside the full-precision model.
+        """
+        onnx_path, csv_path = _resolve_model_files(model_path)
+        onnx_path = _pick_onnx_path(onnx_path, prefer_int8=prefer_int8)
 
         tags_df = pd.read_csv(csv_path)
         self.tag_names = [
@@ -43,8 +81,7 @@ class Autotagger:
             for name, category in zip(tags_df["name"], tags_df["category"])
         ]
 
-        # Load ONNX model
-        self.model = rt.InferenceSession(str(onnx_path))
+        self.model = _create_session(onnx_path)
         _, height, width, _ = self.model.get_inputs()[0].shape
         self.target_size = height
 

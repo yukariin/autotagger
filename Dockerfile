@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 WORKDIR /autotagger
 
+ARG INT8_ONLY=false
+
 ENV \
   PYTHONUNBUFFERED=1 \
   PYTHONDONTWRITEBYTECODE=1 \
@@ -25,12 +27,27 @@ RUN \
 
 # Pre-download the ONNX model and tag vocabulary at build time so the
 # container starts instantly without a network fetch at runtime.
+# Also produce an INT8-quantized copy for faster CPU inference.
 RUN python - <<'EOF'
 import huggingface_hub
+from onnxruntime.quantization import quantize_dynamic, QuantType
+from pathlib import Path
+
 repo = "SmilingWolf/wd-eva02-large-tagger-v3"
-huggingface_hub.hf_hub_download(repo, "model.onnx")
+onnx_path = huggingface_hub.hf_hub_download(repo, "model.onnx")
 huggingface_hub.hf_hub_download(repo, "selected_tags.csv")
+
+int8_path = Path(onnx_path).parent / "model_int8.onnx"
+print(f"Quantizing {onnx_path} -> {int8_path}")
+quantize_dynamic(onnx_path, str(int8_path), weight_type=QuantType.QInt8)
+print(f"Done. INT8 model: {int8_path} ({int8_path.stat().st_size / 1e6:.1f} MB)")
 EOF
+
+# Optionally strip the full-precision model to reduce image size.
+# Build with: docker build --build-arg INT8_ONLY=true
+RUN if [ "$INT8_ONLY" = "true" ]; then \
+      find "$HF_HOME" -name model.onnx -not -name model_int8.onnx -delete; \
+    fi
 
 COPY . .
 
