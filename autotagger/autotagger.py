@@ -1,13 +1,12 @@
 import numpy as np
 import os
+import openvino as ov
 import pandas as pd
-import onnxruntime as rt
 
 from pathlib import Path
 from PIL import Image
 
 MODEL_FILENAME = "model.onnx"
-MODEL_FP16_FILENAME = "model_fp16.onnx"
 LABEL_FILENAME = "selected_tags.csv"
 
 
@@ -36,26 +35,15 @@ def _resolve_model_files(model_path):
     return onnx_path, csv_path
 
 
-def _pick_onnx_path(onnx_path):
-    """Prefer the FP16 model when available, fall back to FP32."""
-    fp16_path = onnx_path.parent / MODEL_FP16_FILENAME
-    if fp16_path.is_file():
-        print(f"Using FP16 model: {fp16_path}")
-        return fp16_path
-    return onnx_path
-
-
-def _create_session(onnx_path):
-    """Create an ONNX Runtime InferenceSession with CPU-optimized settings."""
-    sess_opts = rt.SessionOptions()
-    sess_opts.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess_opts.inter_op_num_threads = 1
+def _create_model(onnx_path):
+    """Compile an OpenVINO model from an ONNX file with CPU-optimized settings."""
+    core = ov.Core()
 
     num_threads = int(os.getenv("ORT_NUM_THREADS", "0"))
     if num_threads > 0:
-        sess_opts.intra_op_num_threads = num_threads
+        core.set_property("CPU", {"INFERENCE_NUM_THREADS": str(num_threads)})
 
-    return rt.InferenceSession(str(onnx_path), sess_options=sess_opts)
+    return core.compile_model(str(onnx_path), "CPU")
 
 
 class Autotagger:
@@ -69,7 +57,6 @@ class Autotagger:
             alongside it in the same directory)
         """
         onnx_path, csv_path = _resolve_model_files(model_path)
-        onnx_path = _pick_onnx_path(onnx_path)
 
         tags_df = pd.read_csv(csv_path)
         self.tag_names = [
@@ -77,12 +64,18 @@ class Autotagger:
             for name, category in zip(tags_df["name"], tags_df["category"])
         ]
 
-        self.model = _create_session(onnx_path)
-        _, height, width, _ = self.model.get_inputs()[0].shape
+        model = _create_model(onnx_path)
+
+        # Get input shape: OpenVINO returns [N, H, W, C] as PartialShape
+        input_shape = model.input(0).shape
+        _, height, width, _ = input_shape
         self.target_size = height
 
-        self._input_name = self.model.get_inputs()[0].name
-        self._output_name = self.model.get_outputs()[0].name
+        self._input_name = model.input(0).get_any_name()
+        self._output_name = model.output(0).get_any_name()
+
+        # Create a reusable infer request for better performance
+        self._infer_request = model.create_infer_request()
 
     def _prepare_image(self, image: Image.Image) -> np.ndarray:
         """Preprocess a PIL image into the NHWC BGR float32 array the model expects."""
@@ -122,7 +115,7 @@ class Autotagger:
         limit : int
             Maximum number of tags to return per image.
         bs : int
-            Batch size for ONNX inference.
+            Batch size for inference.
         """
         images = list(images)
         if not images:
@@ -134,9 +127,9 @@ class Autotagger:
             batch_arr = np.stack([self._prepare_image(img) for img in batch_imgs])
             # shape: (N, H, W, 3) — NHWC as the model expects
 
-            preds = self.model.run(
-                [self._output_name], {self._input_name: batch_arr}
-            )[0]  # shape: (N, num_tags)
+            self._infer_request.infer({self._input_name: batch_arr})
+            preds = self._infer_request.get_output_tensor().data
+            # preds shape: (N, num_tags)
 
             for scores in preds:
                 # Pair every tag name with its score
