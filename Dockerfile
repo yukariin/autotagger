@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir uv && \
     uv sync --no-dev --no-install-project --extra quantize
 
 # Download model and produce INT8 quantized copy.
-RUN uv run python - <<'EOF'
+RUN .venv/bin/python - <<'EOF'
 import huggingface_hub
 from onnxruntime.quantization import quantize_dynamic, QuantType
 from pathlib import Path
