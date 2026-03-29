@@ -1,34 +1,15 @@
-FROM python:3.11-slim
+# ---- Stage 1: Build (download + quantize) ----
+FROM python:3.11-slim AS builder
 WORKDIR /autotagger
 
-ARG INT8_ONLY=false
+ENV HF_HOME=/autotagger/models
 
-ENV \
-  PYTHONUNBUFFERED=1 \
-  PYTHONDONTWRITEBYTECODE=1 \
-  PIP_NO_CACHE_DIR=1 \
-  PIP_DISABLE_PIP_VERSION_CHECK=1 \
-  PATH=/autotagger:$PATH \
-  # Tell huggingface_hub where to store downloaded models
-  HF_HOME=/autotagger/models \
-  MODEL_PATH=SmilingWolf/wd-eva02-large-tagger-v3
+COPY pyproject.toml uv.lock ./
+RUN pip install --no-cache-dir uv && \
+    uv sync --no-dev --no-install-project --extra quantize
 
-RUN \
-  apt-get update && \
-  apt-get install -y --no-install-recommends tini && \
-  apt-get clean && rm -rf /var/lib/apt/lists/* && \
-  pip install "poetry==1.8.5"
-
-COPY pyproject.toml poetry.lock* ./
-RUN \
-  python -m poetry config virtualenvs.create false && \
-  python -m poetry install --only main --no-interaction --no-ansi && \
-  rm -rf /root/.cache/pypoetry
-
-# Pre-download the ONNX model and tag vocabulary at build time so the
-# container starts instantly without a network fetch at runtime.
-# Also produce an INT8-quantized copy for faster CPU inference.
-RUN python - <<'EOF'
+# Download model and produce INT8 quantized copy.
+RUN uv run python - <<'EOF'
 import huggingface_hub
 from onnxruntime.quantization import quantize_dynamic, QuantType
 from pathlib import Path
@@ -39,18 +20,45 @@ huggingface_hub.hf_hub_download(repo, "selected_tags.csv")
 
 int8_path = Path(onnx_path).parent / "model_int8.onnx"
 print(f"Quantizing {onnx_path} -> {int8_path}")
-quantize_dynamic(onnx_path, str(int8_path), weight_type=QuantType.QInt8)
+quantize_dynamic(
+    onnx_path,
+    str(int8_path),
+    weight_type=QuantType.QInt8,
+    op_types_to_quantize=["MatMul", "Gather"],
+)
 print(f"Done. INT8 model: {int8_path} ({int8_path.stat().st_size / 1e6:.1f} MB)")
 EOF
 
-# Optionally strip the full-precision model to reduce image size.
-# Build with: docker build --build-arg INT8_ONLY=true
+# Strip FP32 model when building int8-only image.
+ARG INT8_ONLY=false
 RUN if [ "$INT8_ONLY" = "true" ]; then \
       find "$HF_HOME" -name model.onnx -not -name model_int8.onnx -delete; \
     fi
 
+# ---- Stage 2: Runtime ----
+FROM python:3.11-slim
+WORKDIR /autotagger
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tini && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV \
+  PYTHONUNBUFFERED=1 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  PIP_NO_CACHE_DIR=1 \
+  PIP_DISABLE_PIP_VERSION_CHECK=1 \
+  PATH=/autotagger:$PATH \
+  HF_HOME=/autotagger/models \
+  MODEL_PATH=SmilingWolf/wd-eva02-large-tagger-v3
+
+COPY pyproject.toml uv.lock ./
+RUN pip install --no-cache-dir uv && \
+    uv sync --no-dev --no-install-project
+
+COPY --from=builder /autotagger/models /autotagger/models
 COPY . .
 
 EXPOSE 5000
-ENTRYPOINT ["tini", "--", "poetry", "run"]
+ENTRYPOINT ["tini", "--", "uv", "run"]
 CMD ["gunicorn"]
