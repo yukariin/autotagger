@@ -4,7 +4,7 @@ WORKDIR /autotagger
 
 ENV HF_HOME=/autotagger/models
 
-RUN pip install --no-cache-dir huggingface-hub onnx && \
+RUN pip install --no-cache-dir huggingface-hub onnx onnxruntime && \
     python - <<'EOF'
 import huggingface_hub
 from onnxruntime.transformers import float16
