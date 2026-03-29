@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 MODEL_FILENAME = "model.onnx"
+MODEL_FP16_FILENAME = "model_fp16.onnx"
 LABEL_FILENAME = "selected_tags.csv"
 
 
@@ -35,6 +36,15 @@ def _resolve_model_files(model_path):
     return onnx_path, csv_path
 
 
+def _pick_onnx_path(onnx_path):
+    """Prefer the FP16 model when available, fall back to FP32."""
+    fp16_path = onnx_path.parent / MODEL_FP16_FILENAME
+    if fp16_path.is_file():
+        print(f"Using FP16 model: {fp16_path}")
+        return fp16_path
+    return onnx_path
+
+
 def _create_session(onnx_path):
     """Create an ONNX Runtime InferenceSession with CPU-optimized settings."""
     sess_opts = rt.SessionOptions()
@@ -59,6 +69,7 @@ class Autotagger:
             alongside it in the same directory)
         """
         onnx_path, csv_path = _resolve_model_files(model_path)
+        onnx_path = _pick_onnx_path(onnx_path)
 
         tags_df = pd.read_csv(csv_path)
         self.tag_names = [
