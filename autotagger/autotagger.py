@@ -66,10 +66,9 @@ class Autotagger:
 
         model = _create_model(onnx_path)
 
-        # Get input shape: OpenVINO returns [N, H, W, C] as PartialShape
-        input_shape = model.input(0).shape
-        _, height, width, _ = input_shape
-        self.target_size = height
+        # Get input shape: dimensions are [N, H, W, C] where N may be dynamic
+        input_dims = model.input(0).get_partial_shape()
+        self.target_size = input_dims[1].get_length()
 
         self._input_name = model.input(0).get_any_name()
         self._output_name = model.output(0).get_any_name()
