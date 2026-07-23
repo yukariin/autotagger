@@ -182,7 +182,9 @@ Intel GPU DRA driver) and set `AUTOTAGGER_DEVICE=GPU`. Useful runtime settings:
 | `MODEL_PATH` | bundled model | Hugging Face repo ID, model directory, or direct `.xml`/`.onnx` path |
 | `MODEL_REVISION` | repository default | Optional Hugging Face revision for runtime downloads |
 | `AUTOTAGGER_DEVICE` | `AUTO` | OpenVINO device such as `GPU`, `CPU`, or `AUTO` |
-| `AUTOTAGGER_INFERENCE_PRECISION` | `f32` | Execution precision; FP32 avoids NaN logits from this model on Meteor Lake |
+| `AUTOTAGGER_INFERENCE_PRECISION` | `f16` | OpenVINO execution precision; use `f32` for the conservative accuracy path |
+| `AUTOTAGGER_FP16_SATURATION_GUARD` | `true` | Guard ConvNeXt V2's late residual stream against FP16 overflow |
+| `AUTOTAGGER_FP16_GUARD_BOUND` | `65000` | Finite clamp bound used by the FP16 saturation guard |
 | `AUTOTAGGER_PERFORMANCE_HINT` | `LATENCY` | OpenVINO performance hint |
 | `AUTOTAGGER_OPENVINO_CACHE_DIR` | `/tmp/autotagger-openvino-cache` | Compiled-model cache |
 
@@ -203,6 +205,12 @@ with ImageNet statistics, and passed to the model as RGB NCHW tensors. Model
 logits are converted to probabilities with sigmoid. Rating labels retain the
 service's existing `rating:general`, `rating:sensitive`,
 `rating:questionable`, and `rating:explicit` convention.
+
+ConvNeXt V2 Huge's late stage-2 residual activations can exceed FP16's maximum
+finite value. The FP16 path inserts seven saturation guards around the affected
+residual and depthwise outputs so the following normalization layers do not
+turn infinities into NaNs. Set `AUTOTAGGER_INFERENCE_PRECISION=f32` to disable
+the need for these guards and use FP32 execution throughout.
 
 The application source is MIT licensed. The bundled model is GPL-3.0 licensed;
 see the upstream model card for its terms.

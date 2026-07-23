@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -18,6 +19,14 @@ CONFIG_FILENAME = "config.json"
 
 IMAGENET_MEAN = np.asarray((0.485, 0.456, 0.406), dtype=np.float32)
 IMAGENET_STD = np.asarray((0.229, 0.224, 0.225), dtype=np.float32)
+FP16_MAX = float(np.finfo(np.float16).max)
+FP16_GUARD_BOUND = 65000.0
+_STAGE2_RESIDUAL_PATTERN = re.compile(
+    r"/stages/stages\.2/blocks/blocks\.(\d+)/Add$"
+)
+_STAGE2_DEPTHWISE_PATTERN = re.compile(
+    r"/stages/stages\.2/blocks/blocks\.(\d+)/conv_dw/Conv$"
+)
 def _resolve_local_model(directory: Path, explicit_model: Path | None = None):
     model_path = explicit_model
     if model_path is None:
@@ -95,6 +104,51 @@ def _load_target_size(config_path: Path) -> int:
     return int(input_size[1])
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _needs_fp16_saturation_guard(name: str) -> bool:
+    residual = _STAGE2_RESIDUAL_PATTERN.fullmatch(name)
+    if residual:
+        return int(residual.group(1)) >= 23
+
+    depthwise = _STAGE2_DEPTHWISE_PATTERN.fullmatch(name)
+    return bool(depthwise and int(depthwise.group(1)) >= 24)
+
+
+def _add_fp16_saturation_guards(model, bound=FP16_GUARD_BOUND) -> tuple[str, ...]:
+    """Clamp the seven late-stage accumulation hotspots before FP16 overflow.
+
+    ConvNeXt V2 Huge's stage-2 residual stream approaches FP16's finite limit.
+    The block-23 residual Add can overflow, then the following depthwise
+    convolutions spread infinity into layer normalization and produce NaNs.
+    """
+    bound = float(bound)
+    if not 0.0 < bound <= FP16_MAX:
+        raise ValueError(f"FP16 saturation bound must be in (0, {FP16_MAX}]")
+
+    guarded = []
+    for operation in list(model.get_ordered_ops()):
+        name = operation.get_friendly_name()
+        if not _needs_fp16_saturation_guard(name):
+            continue
+
+        output = operation.output(0)
+        consumers = list(output.get_target_inputs())
+        clamp = ov.opset14.clamp(output, -bound, bound)
+        clamp.set_friendly_name(f"{name}/fp16_saturation_guard")
+        for consumer in consumers:
+            consumer.replace_source_output(clamp.output(0))
+        guarded.append(name)
+
+    model.validate_nodes_and_infer_types()
+    return tuple(guarded)
+
+
 class Autotagger:
     def __init__(
         self,
@@ -142,12 +196,21 @@ class Autotagger:
         performance_hint = performance_hint or os.getenv(
             "AUTOTAGGER_PERFORMANCE_HINT", "LATENCY"
         )
-        # OpenVINO's GPU plugin defaults to FP16 execution. ConvNeXt V2 Huge
-        # produces NaN logits in that mode on Meteor Lake, while FP32 execution
-        # is stable and still uses the compressed FP16 weights from the IR.
         inference_precision = inference_precision or os.getenv(
-            "AUTOTAGGER_INFERENCE_PRECISION", "f32"
+            "AUTOTAGGER_INFERENCE_PRECISION", "f16"
         )
+        if inference_precision.lower() == "f16" and _env_bool(
+            "AUTOTAGGER_FP16_SATURATION_GUARD", True
+        ):
+            guard_bound = float(
+                os.getenv("AUTOTAGGER_FP16_GUARD_BOUND", FP16_GUARD_BOUND)
+            )
+            guarded = _add_fp16_saturation_guards(model, guard_bound)
+            logging.info(
+                "Added %d FP16 saturation guards with bound %g",
+                len(guarded),
+                guard_bound,
+            )
         compile_options = {
             "CACHE_DIR": openvino_cache_dir,
             "PERFORMANCE_HINT": performance_hint,
@@ -212,7 +275,8 @@ class Autotagger:
         if not np.isfinite(logits).all():
             raise RuntimeError(
                 "Model returned non-finite logits. "
-                "Use AUTOTAGGER_INFERENCE_PRECISION=f32 on Intel GPU."
+                "Enable the FP16 saturation guard or use "
+                "AUTOTAGGER_INFERENCE_PRECISION=f32."
             )
 
         # This ONNX conversion exposes raw classifier logits.

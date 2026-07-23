@@ -1,10 +1,16 @@
 from types import SimpleNamespace
 
 import numpy as np
+import openvino as ov
 import pytest
 from PIL import Image
 
-from autotagger.autotagger import Autotagger, _api_tag_name
+from autotagger.autotagger import (
+    Autotagger,
+    _add_fp16_saturation_guards,
+    _api_tag_name,
+    _needs_fp16_saturation_guard,
+)
 
 
 def bare_tagger(*, size=2, tags=None):
@@ -114,3 +120,52 @@ def test_predict_rejects_non_finite_logits():
 
     with pytest.raises(RuntimeError, match="non-finite"):
         list(tagger.predict([image], bs=1))
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("/stages/stages.2/blocks/blocks.22/Add", False),
+        ("/stages/stages.2/blocks/blocks.23/conv_dw/Conv", False),
+        ("/stages/stages.2/blocks/blocks.23/Add", True),
+        ("/stages/stages.2/blocks/blocks.24/conv_dw/Conv", True),
+        ("/stages/stages.2/blocks/blocks.26/Add", True),
+        ("/stages/stages.3/blocks/blocks.0/Add", False),
+    ],
+)
+def test_fp16_saturation_guard_targets_only_overflowing_tail(name, expected):
+    assert _needs_fp16_saturation_guard(name) is expected
+
+
+def test_add_fp16_saturation_guards_rewires_selected_outputs():
+    parameter = ov.opset14.parameter([1], np.float32)
+    current = parameter
+    names = [
+        "/stages/stages.2/blocks/blocks.22/Add",
+        "/stages/stages.2/blocks/blocks.23/Add",
+        "/stages/stages.2/blocks/blocks.24/conv_dw/Conv",
+        "/stages/stages.2/blocks/blocks.24/Add",
+        "/stages/stages.2/blocks/blocks.25/conv_dw/Conv",
+        "/stages/stages.2/blocks/blocks.25/Add",
+        "/stages/stages.2/blocks/blocks.26/conv_dw/Conv",
+        "/stages/stages.2/blocks/blocks.26/Add",
+    ]
+    for name in names:
+        current = ov.opset14.add(
+            current, ov.opset14.constant(np.asarray([0.0], dtype=np.float32))
+        )
+        current.set_friendly_name(name)
+    model = ov.Model([current], [parameter])
+
+    guarded = _add_fp16_saturation_guards(model)
+
+    assert len(guarded) == 7
+    assert sum(op.get_type_name() == "Clamp" for op in model.get_ordered_ops()) == 7
+
+
+def test_fp16_saturation_guard_rejects_invalid_bound():
+    parameter = ov.opset14.parameter([1], np.float32)
+    model = ov.Model([parameter], [parameter])
+
+    with pytest.raises(ValueError, match="bound"):
+        _add_fp16_saturation_guards(model, 70000)
