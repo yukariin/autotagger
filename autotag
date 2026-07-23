@@ -5,8 +5,9 @@ import click
 import itertools
 import logging
 import PIL
-from fastai.vision.core import PILImage
+from PIL import Image
 from autotagger import Autotagger
+from autotagger.autotagger import DEFAULT_MODEL_REPO
 from pathlib import Path
 from more_itertools import ichunked
 
@@ -18,10 +19,11 @@ from more_itertools import ichunked
 @click.option("-i", "--input-file", type=click.File(), help="Read list of image filenames from text file.")
 @click.option("-g/-f", "--group-tags/--flatten-tags", default=True, show_default=True, help="Output rows in {filename, tags} format or {filename, tag, score} format.")
 @click.option("-N", "--name-only", is_flag=True, help="Output only the filename without the full path or extension.")
-@click.option("-m", "--model", default="models/model.pth", type=click.Path(exists=True), show_default=True, help="The model to use.")
+@click.option("-m", "--model", default=DEFAULT_MODEL_REPO, show_default=True, help="Hugging Face repo ID or local model path.")
+@click.option("--device", envvar="AUTOTAGGER_DEVICE", default="AUTO", show_default=True, help="OpenVINO device (for example AUTO, GPU, or CPU).")
 @click.argument("files", nargs=-1, type=click.Path(exists=True, allow_dash=True, path_type=Path))
-def main(files, threshold, limit, bs, csv, input_file, group_tags, name_only, model):
-    autotagger = Autotagger(model)
+def main(files, threshold, limit, bs, csv, input_file, group_tags, name_only, model, device):
+    autotagger = Autotagger(model, device=device)
 
     if input_file:
         paths = (Path(line.rstrip()) for line in input_file)
@@ -68,7 +70,7 @@ def recurse_dir(directory):
 def open_image(filepath):
     try:
         with click.open_file(filepath, "rb") as file:
-          return (filepath, PILImage.create(file))
+            return (filepath, Image.open(file).copy())
     except PIL.UnidentifiedImageError as err:
         logging.warning(f"Skipped {filepath} (not an image)")
         return None

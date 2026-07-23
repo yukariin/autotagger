@@ -4,6 +4,11 @@ A tag prediction system for anime-style images.
 
 ![image](https://user-images.githubusercontent.com/8430473/176574544-d8ebe9e0-fdf2-4090-8864-b856ce5e3ff9.png)
 
+The current image uses
+[animetimm/convnextv2_huge.dbv4-full](https://huggingface.co/animetimm/convnextv2_huge.dbv4-full),
+a 12,476-tag ConvNeXt V2 model trained on Danbooru-style data. The container
+ships a pinned FP16 OpenVINO conversion for Intel CPU and Xe GPU inference.
+
 # Demo
 
 Try it at https://autotagger.donmai.us.
@@ -37,7 +42,7 @@ Start the app server:
 docker run --rm -p 5000:5000 ghcr.io/danbooru/autotagger
 
 # Without Docker
-python -m poetry run gunicorn
+uv run gunicorn
 ```
 
 Then open http://localhost:5000 to use the webapp. Here you can upload images and
@@ -144,45 +149,62 @@ Generate a list of tags in CSV format, suitable for importing into your own Danb
 
 # Manual Installation
 
-```
-# Install system dependencies
-apt-get update
-apt-get install git build-essential gfortran libatlas-base-dev libffi-dev libssl-dev libbz2-dev liblzma-dev
-
-# Get code
+```bash
 git clone https://github.com/danbooru/autotagger.git
 cd autotagger
-
-# Install Python (skip this if Python 3.9.13 is already installed)
-git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.10.0
-echo ". $HOME/.asdf/asdf.sh" >> ~/.bashrc
-exec bash
-asdf plugin add python
-asdf install python 3.9.13
-asdf shell python 3.9.13
-
-# Install Python dependencies
-pip install poetry==1.1.13
-python -m poetry env use 3.9
-python -m poetry install --no-dev
-
-# Download latest model
-wget https://github.com/danbooru/autotagger/releases/download/2022.06.20-233624-utc/model.pth -O models/model.pth
-
-# Test that it works
-./autotag test/hatsune_miku.jpg
+uv sync
+uv run ./autotag test/hatsune_miku.jpg
 ```
+
+The default local ONNX model is downloaded from Hugging Face on first use and
+does not require a token. The original PyTorch repository is gated; the
+container uses the public, pinned ONNX conversion linked below.
+
+# Intel Xe GPU
+
+OpenVINO uses automatic device selection by default. To require an Intel GPU
+and fail instead of falling back to CPU:
+
+```bash
+docker run --rm \
+  --device=/dev/dri \
+  --group-add="$(stat -c '%g' /dev/dri/renderD* | head -n1)" \
+  -e AUTOTAGGER_DEVICE=GPU \
+  -p 5000:5000 \
+  ghcr.io/danbooru/autotagger
+```
+
+In Kubernetes, expose the Intel GPU device to the pod (for example with the
+Intel GPU DRA driver) and set `AUTOTAGGER_DEVICE=GPU`. Useful runtime settings:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MODEL_PATH` | bundled model | Hugging Face repo ID, model directory, or direct `.xml`/`.onnx` path |
+| `MODEL_REVISION` | repository default | Optional Hugging Face revision for runtime downloads |
+| `AUTOTAGGER_DEVICE` | `AUTO` | OpenVINO device such as `GPU`, `CPU`, or `AUTO` |
+| `AUTOTAGGER_PERFORMANCE_HINT` | `LATENCY` | OpenVINO performance hint |
+| `AUTOTAGGER_OPENVINO_CACHE_DIR` | `/tmp/autotagger-openvino-cache` | Compiled-model cache |
+
+Use one Gunicorn worker unless the node has enough memory for multiple copies
+of the model. Gunicorn threads share one model instance safely.
 
 # Implementation
 
-The current model is stock Resnet-152, pretrained on Imagenet then finetuned
-on Danbooru for about 10 epochs.
+The build downloads the pinned
+[`itterative/convnextv2_huge.dbv4-full-onnx`](https://huggingface.co/itterative/convnextv2_huge.dbv4-full-onnx)
+conversion of the requested model and converts it to an OpenVINO IR with FP16
+weights. This reduces model storage by roughly half and lets Intel Xe execute
+the graph in FP16. The upstream tag vocabulary is checksum-verified during the
+build.
 
-The model is trained on about 5500 tags. This includes character tags with >750
-posts, copyright tags with >2000 posts, and general tags with >2500 posts, but not artist
-or meta tags. Ratings are also included.
+Images are resized without distortion, centered on a white square, normalized
+with ImageNet statistics, and passed to the model as RGB NCHW tensors. Model
+logits are converted to probabilities with sigmoid. Rating labels retain the
+service's existing `rating:g`, `rating:s`, `rating:q`, and `rating:e`
+convention.
 
-The model is available at https://github.com/danbooru/autotagger/releases.
+The application source is MIT licensed. The bundled model is GPL-3.0 licensed;
+see the upstream model card for its terms.
 
 # See also
 

@@ -1,36 +1,79 @@
-FROM python:3.9.13-slim
-WORKDIR /autotagger
+# syntax=docker/dockerfile:1.7
 
-# https://github.com/python-poetry/poetry/discussions/1879#discussioncomment-216865
+ARG UV_VERSION=0.11.31
+FROM --platform=$BUILDPLATFORM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-build
+FROM --platform=$TARGETPLATFORM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-target
+
+
+# Model conversion runs natively on the build host. OpenVINO IR is portable,
+# so Apple Silicon can prepare the model without emulating amd64.
+FROM --platform=$BUILDPLATFORM python:3.12-slim-bookworm AS model-builder
+
+WORKDIR /build
+
 ENV \
-  # https://stackoverflow.com/questions/59812009/what-is-the-use-of-pythonunbuffered-in-docker-file
-  PYTHONUNBUFFERED=1 \
-  # https://python-docs.readthedocs.io/en/latest/writing/gotchas.html#disabling-bytecode-pyc-files
-  PYTHONDONTWRITEBYTECODE=1 \
-  # https://stackoverflow.com/questions/45594707/what-is-pips-no-cache-dir-good-for
-  PIP_NO_CACHE_DIR=1 \
-  # https://stackoverflow.com/questions/46288847/how-to-suppress-pip-upgrade-warning
   PIP_DISABLE_PIP_VERSION_CHECK=1 \
-  PATH=/autotagger:$PATH
+  UV_LINK_MODE=copy
 
+COPY pyproject.toml uv.lock ./
+RUN --mount=from=uv-build,source=/uv,target=/usr/local/bin/uv \
+  uv sync --frozen --no-dev --no-install-project
+
+ARG MODEL_REPO=itterative/convnextv2_huge.dbv4-full-onnx
+ARG MODEL_REVISION=b266f136697bf0f6c37dbf818c47e550cf7e8f6a
+
+COPY scripts/prepare_model.py /tmp/prepare_model.py
+RUN --mount=type=secret,id=HF_TOKEN,required=false \
+  HF_TOKEN_PATH=/run/secrets/HF_TOKEN \
+  .venv/bin/python /tmp/prepare_model.py \
+    --repo "${MODEL_REPO}" \
+    --revision "${MODEL_REVISION}" \
+    --output /opt/autotagger/model
+
+
+FROM --platform=$TARGETPLATFORM ubuntu:24.04 AS runtime
+
+WORKDIR /opt/autotagger/app
+
+ENV \
+  PYTHONUNBUFFERED=1 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  UV_LINK_MODE=copy \
+  PATH="/opt/autotagger/app/.venv/bin:/opt/autotagger/app:${PATH}"
+
+# The OpenVINO wheel contains the GPU plugin. These system packages provide
+# the OpenCL loader and Intel compute runtime required to reach /dev/dri.
 RUN \
   apt-get update && \
-  apt-get install -y --no-install-recommends tini build-essential gfortran libatlas-base-dev wget && \
-  pip install "poetry==1.1.13"
+  DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends \
+    intel-opencl-icd \
+    ocl-icd-libopencl1 \
+    python3 \
+    python3-venv \
+    tini && \
+  rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml uv.lock ./
+RUN --mount=from=uv-target,source=/uv,target=/usr/local/bin/uv \
+  uv sync --python /usr/bin/python3 --frozen --no-dev --no-install-project && \
+  rm -rf /root/.cache /root/.local
+
 RUN \
-  python -m poetry install --no-dev && \
-  rm -rf /root/.cache/pypoetry/artifacts /root/.cache/pypoetry/cache
+  groupadd --gid 10001 autotagger && \
+  useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin autotagger
 
-RUN \
-  mkdir models && \
-  wget https://github.com/danbooru/autotagger/releases/download/2022.06.20-233624-utc/model.pth -O models/model.pth
+ENV \
+  AUTOTAGGER_DEVICE=AUTO \
+  AUTOTAGGER_OPENVINO_CACHE_DIR=/tmp/autotagger-openvino-cache \
+  AUTOTAGGER_PERFORMANCE_HINT=LATENCY \
+  HF_HOME=/tmp/autotagger-huggingface \
+  MODEL_PATH=/opt/autotagger/model
 
-COPY . .
+COPY --from=model-builder --chown=10001:10001 /opt/autotagger/model /opt/autotagger/model
+COPY --chown=10001:10001 . .
+
+USER 10001:10001
 
 EXPOSE 5000
-ENTRYPOINT ["tini", "--", "poetry", "run"]
-#CMD ["autotag"]
-#CMD ["flask", "run", "--host", "0.0.0.0"]
+ENTRYPOINT ["tini", "--"]
 CMD ["gunicorn"]

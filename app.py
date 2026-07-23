@@ -3,24 +3,24 @@
 from os import getenv
 from dotenv import load_dotenv
 from autotagger import Autotagger
+from autotagger.autotagger import DEFAULT_MODEL_REPO
 from base64 import b64encode
-from fastai.vision.core import PILImage
+from PIL import Image
 from flask import Flask, request, render_template, jsonify, abort
 from werkzeug.exceptions import HTTPException
-import torch
 
 load_dotenv()
-model_path = getenv("MODEL_PATH", "models/model.pth")
-autotagger = Autotagger(model_path)
-
-# This is necessary for Gunicorn to work with multiple workers and preloading enabled.
-torch.set_num_threads(1)
-#autotagger.learn.model.eval()
-#autotagger.learn.model.share_memory()
+model_path = getenv("MODEL_PATH", DEFAULT_MODEL_REPO)
+autotagger = Autotagger(
+    model_path,
+    device=getenv("AUTOTAGGER_DEVICE"),
+    model_revision=getenv("MODEL_REVISION"),
+)
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
 app.config["JSON_PRETTYPRINT_REGULAR"] = True
+app.json.sort_keys = False
 
 @app.route("/", methods=["GET"])
 def index():
@@ -33,7 +33,8 @@ def evaluate():
     output = request.values.get("format", "html")
     limit = int(request.values.get("limit", 50))
 
-    images = [PILImage.create(file) for file in files]
+    # Detach PIL's lazy decoding from Flask's temporary upload streams.
+    images = [Image.open(file).copy() for file in files]
     predictions = autotagger.predict(images, threshold=threshold, limit=limit)
 
     if output == "html":
