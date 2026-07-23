@@ -18,14 +18,6 @@ CONFIG_FILENAME = "config.json"
 
 IMAGENET_MEAN = np.asarray((0.485, 0.456, 0.406), dtype=np.float32)
 IMAGENET_STD = np.asarray((0.229, 0.224, 0.225), dtype=np.float32)
-RATING_NAMES = {
-    "general": "rating:g",
-    "sensitive": "rating:s",
-    "questionable": "rating:q",
-    "explicit": "rating:e",
-}
-
-
 def _resolve_local_model(directory: Path, explicit_model: Path | None = None):
     model_path = explicit_model
     if model_path is None:
@@ -80,7 +72,7 @@ def resolve_model_files(model_path, revision=None):
 def _api_tag_name(name: str, category: int) -> str:
     if category != 9:
         return name
-    return RATING_NAMES.get(name, f"rating:{name}")
+    return f"rating:{name}"
 
 
 def _load_tag_names(labels_path: Path) -> list[str]:
@@ -112,6 +104,7 @@ class Autotagger:
         model_revision=None,
         openvino_cache_dir=None,
         performance_hint=None,
+        inference_precision=None,
     ):
         """Load the ConvNeXt V2 DBV4 tagger with OpenVINO.
 
@@ -149,9 +142,16 @@ class Autotagger:
         performance_hint = performance_hint or os.getenv(
             "AUTOTAGGER_PERFORMANCE_HINT", "LATENCY"
         )
+        # OpenVINO's GPU plugin defaults to FP16 execution. ConvNeXt V2 Huge
+        # produces NaN logits in that mode on Meteor Lake, while FP32 execution
+        # is stable and still uses the compressed FP16 weights from the IR.
+        inference_precision = inference_precision or os.getenv(
+            "AUTOTAGGER_INFERENCE_PRECISION", "f32"
+        )
         compile_options = {
             "CACHE_DIR": openvino_cache_dir,
             "PERFORMANCE_HINT": performance_hint,
+            "INFERENCE_PRECISION_HINT": inference_precision,
         }
 
         self._compiled_model = core.compile_model(model, device, compile_options)
@@ -208,6 +208,12 @@ class Autotagger:
         with self._infer_lock:
             self._infer_request.infer({self._input_name: batch})
             logits = self._infer_request.get_output_tensor(0).data.copy()
+
+        if not np.isfinite(logits).all():
+            raise RuntimeError(
+                "Model returned non-finite logits. "
+                "Use AUTOTAGGER_INFERENCE_PRECISION=f32 on Intel GPU."
+            )
 
         # This ONNX conversion exposes raw classifier logits.
         clipped = np.clip(logits, -80.0, 80.0)

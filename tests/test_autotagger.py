@@ -17,10 +17,10 @@ def bare_tagger(*, size=2, tags=None):
 @pytest.mark.parametrize(
     ("name", "category", "expected"),
     [
-        ("general", 9, "rating:g"),
-        ("sensitive", 9, "rating:s"),
-        ("questionable", 9, "rating:q"),
-        ("explicit", 9, "rating:e"),
+        ("general", 9, "rating:general"),
+        ("sensitive", 9, "rating:sensitive"),
+        ("questionable", 9, "rating:questionable"),
+        ("explicit", 9, "rating:explicit"),
         ("1girl", 0, "1girl"),
     ],
 )
@@ -94,3 +94,23 @@ def test_predict_rejects_invalid_batch_size():
     tagger = bare_tagger()
     with pytest.raises(ValueError, match="bs"):
         list(tagger.predict([object()], bs=0))
+
+
+def test_predict_rejects_non_finite_logits():
+    tagger = bare_tagger(tags=["broken"])
+    tagger._input_name = "pixel_values"
+    tagger._infer_lock = __import__("threading").Lock()
+    tagger._prepare_image = lambda image: image
+
+    class FakeInferRequest:
+        def infer(self, inputs):
+            pass
+
+        def get_output_tensor(self, index):
+            return SimpleNamespace(data=np.asarray([[np.nan]], dtype=np.float32))
+
+    tagger._infer_request = FakeInferRequest()
+    image = np.zeros((3, 2, 2), dtype=np.float32)
+
+    with pytest.raises(RuntimeError, match="non-finite"):
+        list(tagger.predict([image], bs=1))

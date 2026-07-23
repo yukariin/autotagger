@@ -75,7 +75,7 @@ The output will look like this:
       "aqua_hair": 0.8266996145248413,
       "detached_sleeves": 0.796751081943512,
       "skirt": 0.7879447340965271,
-      "rating:s": 0.7843148112297058,
+      "rating:sensitive": 0.7843148112297058,
       "aqua_eyes": 0.6136178374290466,
       "zettai_ryouiki": 0.5611224174499512,
       "thigh_boots": 0.37453025579452515,
@@ -92,7 +92,7 @@ The output will look like this:
       "bare_shoulders": 0.17370294034481049,
       "headphones": 0.16347116231918335,
       "standing": 0.15511766076087952,
-      "rating:g": 0.13711321353912354,
+      "rating:general": 0.13711321353912354,
       "aqua_necktie": 0.11798079311847687,
       "black_skirt": 0.11197035759687424,
       "blush": 0.10813453793525696
@@ -182,6 +182,7 @@ Intel GPU DRA driver) and set `AUTOTAGGER_DEVICE=GPU`. Useful runtime settings:
 | `MODEL_PATH` | bundled model | Hugging Face repo ID, model directory, or direct `.xml`/`.onnx` path |
 | `MODEL_REVISION` | repository default | Optional Hugging Face revision for runtime downloads |
 | `AUTOTAGGER_DEVICE` | `AUTO` | OpenVINO device such as `GPU`, `CPU`, or `AUTO` |
+| `AUTOTAGGER_INFERENCE_PRECISION` | `f32` | Execution precision; FP32 avoids NaN logits from this model on Meteor Lake |
 | `AUTOTAGGER_PERFORMANCE_HINT` | `LATENCY` | OpenVINO performance hint |
 | `AUTOTAGGER_OPENVINO_CACHE_DIR` | `/tmp/autotagger-openvino-cache` | Compiled-model cache |
 
@@ -200,8 +201,8 @@ build.
 Images are resized without distortion, centered on a white square, normalized
 with ImageNet statistics, and passed to the model as RGB NCHW tensors. Model
 logits are converted to probabilities with sigmoid. Rating labels retain the
-service's existing `rating:g`, `rating:s`, `rating:q`, and `rating:e`
-convention.
+service's existing `rating:general`, `rating:sensitive`,
+`rating:questionable`, and `rating:explicit` convention.
 
 The application source is MIT licensed. The bundled model is GPL-3.0 licensed;
 see the upstream model card for its terms.
